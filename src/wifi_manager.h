@@ -4,6 +4,7 @@
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include <esp_netif.h>
 
 // Public event group bits
 #define WIFI_CONNECTED_BIT BIT0
@@ -36,6 +37,9 @@ public:
     // Get IP address as string
     void getIpAddressStr(char* buffer, size_t buffer_size);
 
+    // Set static IP configuration
+    esp_err_t setStaticIP(const esp_netif_ip_info_t& ip_info, esp_netif_dns_info_t& dns_info);
+
 private:
     // Private constructor for singleton
     WiFiManager();
@@ -62,4 +66,7 @@ private:
     
     // Connection status
     bool _initialized;
+
+    // Network interface handle
+    esp_netif_t* _netif;
 };

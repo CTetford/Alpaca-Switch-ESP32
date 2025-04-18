@@ -9,14 +9,21 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <nvs_flash.h>
+#include <esp_netif.h>
+#include <esp_wifi.h>
 
 #include "alpaca_switch.h"
 #include "wifi_manager.h"
 #include "switch_storage.h"
 #include "ota_updater.h"
 #include "alpaca_auth.h"
+#include "config.h"
 
 static const char *TAG = "main";
+
+// HTTP Server Configuration
+#define HTTP_SERVER_MAX_URI_HANDLERS 64
+#define HTTP_SERVER_STACK_SIZE 8192
 
 // WiFi configuration - update with your network credentials
 #define WIFI_SSID "your_wifi_ssid"
@@ -52,25 +59,42 @@ extern "C" void app_main(void)
     
     // Initialize WiFi manager (this doesn't connect yet)
     WiFiManager& wifiManager = WiFiManager::getInstance();
+    
+    // Initialize WiFi with configuration
     wifiManager.init(WIFI_SSID, WIFI_PASS);
+    
+    // Configure static IP if enabled
+    #ifdef USE_STATIC_IP
+        esp_netif_ip_info_t ip_info;
+        ip_info.ip.addr = ipaddr_addr(STATIC_IP);
+        ip_info.gw.addr = ipaddr_addr(STATIC_GATEWAY);
+        ip_info.netmask.addr = ipaddr_addr(STATIC_NETMASK);
+        
+        esp_netif_dns_info_t dns_info;
+        dns_info.ip.u_addr.ip4.addr = ipaddr_addr(STATIC_DNS1);
+        dns_info.ip.type = IPADDR_TYPE_V4;
+        
+        wifiManager.setStaticIP(ip_info, dns_info);
+        ESP_LOGI(TAG, "Static IP configuration enabled: %s", STATIC_IP);
+    #endif
     
     // Start WiFi connection process (non-blocking)
     wifiManager.connect();
     
     // Configure and start HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 64;
-    config.stack_size = 8192;
+    config.max_uri_handlers = HTTP_SERVER_MAX_URI_HANDLERS;
+    config.stack_size = HTTP_SERVER_STACK_SIZE;
     config.lru_purge_enable = true;
 
     ESP_ERROR_CHECK(httpd_start(&server, &config));
     ESP_LOGI(TAG, "HTTP server started");
     
     // Create switch configurations
-    switch_config_t switch_configs[5]; 
+    switch_config_t switch_configs[DEFAULT_NUM_SWITCHES]; 
     
     // Initialize with default values
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < DEFAULT_NUM_SWITCHES; i++) {
         // Try to load from NVS first
         switch_storage_t saved_config;
         if (SwitchStorage::loadSwitch(i, &saved_config) == ESP_OK) {
@@ -85,28 +109,26 @@ extern "C" void app_main(void)
             switch_configs[i].can_write = saved_config.can_write;
         } else {
             // Set default values
-            const int default_pins[5] = {12, 14, 27, 26, 25};
-            
-            switch_configs[i].gpio_pin = default_pins[i];
-            switch_configs[i].normally_on = false;
+            switch_configs[i].gpio_pin = DEFAULT_SWITCH_PINS[i];
+            switch_configs[i].normally_on = DEFAULT_SWITCH_NORMAL_STATES[i];
             
             char name[32];
             snprintf(name, sizeof(name), "Switch %d", i);
             switch_configs[i].name = name;
             
             char desc[128];
-            snprintf(desc, sizeof(desc), "GPIO Switch on pin %d", default_pins[i]);
+            snprintf(desc, sizeof(desc), "GPIO Switch on pin %d", DEFAULT_SWITCH_PINS[i]);
             switch_configs[i].description = desc;
             
-            switch_configs[i].min_value = 0.0;
-            switch_configs[i].max_value = 1.0;
-            switch_configs[i].step = 1.0;
-            switch_configs[i].can_write = true;
+            switch_configs[i].min_value = DEFAULT_SWITCH_MIN_VALUES[i];
+            switch_configs[i].max_value = DEFAULT_SWITCH_MAX_VALUES[i];
+            switch_configs[i].step = DEFAULT_SWITCH_STEPS[i];
+            switch_configs[i].can_write = DEFAULT_SWITCH_CAN_WRITE[i];
         }
     }
     
     // Create ASCOM Switch device instance
-    AlpacaSwitch* switchDevice = new AlpacaSwitch(switch_configs, 5);
+    AlpacaSwitch* switchDevice = new AlpacaSwitch(switch_configs, DEFAULT_NUM_SWITCHES);
     
     // Create vector of devices
     std::vector<AlpacaServer::Device *> devices;
@@ -115,11 +137,11 @@ extern "C" void app_main(void)
     // Create the Alpaca API server with our devices
     AlpacaServer::Api api(
         devices,
-        "ESP32_SWITCH_SERIAL",
-        "ESP32 Alpaca Switch Server",
-        "YourName/Organization",
+        DEVICE_SERIAL,
+        DEVICE_NAME,
+        DEVICE_ORGANIZATION,
         desc.version,
-        "Location Description"
+        DEVICE_LOCATION
     );
     
     // Register the API routes with the HTTP server
@@ -129,54 +151,14 @@ extern "C" void app_main(void)
     // Start the Alpaca Discovery service - will work on local networks
     // even without internet connection
     ESP_LOGI(TAG, "Starting Alpaca Discovery server");
-    alpaca_server_discovery_start(80);
+    alpaca_server_discovery_start(HTTP_SERVER_PORT);
     
     // Main loop
     ESP_LOGI(TAG, "System startup complete, entering main loop");
     
-    // Try to load saved switch states
-    bool states[5];
-    double values[5];
-    if (SwitchStorage::loadAllStates(states, values, 5) == ESP_OK) {
-        // Apply saved states
-        for (int i = 0; i < 5; i++) {
-            // Only apply state if switch is writable
-            if (switch_configs[i].can_write) {
-                if (states[i]) {
-                    switchDevice->put_setswitch(i, true);
-                } else {
-                    switchDevice->put_setswitchvalue(i, values[i]);
-                }
-            }
-        }
-        ESP_LOGI(TAG, "Loaded and applied saved switch states");
-    }
-    
     while (true) {
         // Check WiFi status
         bool connected = wifiManager.isConnected();
-        
-        // Periodically save switch states
-        static int save_counter = 0;
-        save_counter++;
-        
-        if (save_counter >= 30) {  // Every 30 seconds
-            save_counter = 0;
-            
-            // Save all switch states
-            bool states[5];
-            double values[5];
-            
-            // Get current switch states
-            for (int i = 0; i < 5; i++) {
-                switchDevice->get_getswitch(i, &states[i]);
-                switchDevice->get_getswitchvalue(i, &values[i]);
-            }
-            
-            // Save to NVS
-            SwitchStorage::saveAllStates(states, values, 5);
-            ESP_LOGI(TAG, "Saved all switch states");
-        }
         
         // Sleep for a while
         vTaskDelay(pdMS_TO_TICKS(1000));  // 1 second

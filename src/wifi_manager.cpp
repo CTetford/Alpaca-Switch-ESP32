@@ -50,7 +50,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 }
 
 WiFiManager::WiFiManager()
-    : _taskHandle(NULL), _initialized(false)
+    : _taskHandle(NULL), _initialized(false), _netif(NULL)
 {
     _eventGroup = xEventGroupCreate();
     xEventGroupSetBits(_eventGroup, WIFI_DISCONNECTED_BIT);
@@ -87,7 +87,7 @@ esp_err_t WiFiManager::init(const char* ssid, const char* password)
     // Initialize networking components
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    _netif = esp_netif_create_default_wifi_sta();
     
     // Initialize WiFi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -99,28 +99,15 @@ esp_err_t WiFiManager::init(const char* ssid, const char* password)
     
     // Configure WiFi station
     wifi_config_t wifi_config = {};
-    strncpy((char*)wifi_config.sta.ssid, _ssid, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char*)wifi_config.sta.password, _password, sizeof(wifi_config.sta.password) - 1);
-    
-    // Set authentication mode
-    if (strlen(_password) == 0) {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    } else {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    }
-    
-    wifi_config.sta.pmf_cfg.capable = true;
-    wifi_config.sta.pmf_cfg.required = false;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    strncpy((char*)wifi_config.sta.ssid, _ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char*)wifi_config.sta.password, _password, sizeof(wifi_config.sta.password));
     
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     
-    // Create task for connection management
-    xTaskCreate(connectionTask, "wifi_mgr", 4096, this, 5, &_taskHandle);
-    
     _initialized = true;
-    ESP_LOGI(TAG, "WiFi manager initialized with SSID: %s", _ssid);
-    
     return ESP_OK;
 }
 
@@ -131,18 +118,46 @@ esp_err_t WiFiManager::connect()
         return ESP_ERR_INVALID_STATE;
     }
     
-    esp_err_t err = esp_wifi_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(err));
-        return err;
+    // Start WiFi
+    ESP_ERROR_CHECK(esp_wifi_start());
+    
+    // Connect to access point
+    ESP_ERROR_CHECK(esp_wifi_connect());
+    
+    ESP_LOGI(TAG, "WiFi connection started");
+    return ESP_OK;
+}
+
+bool WiFiManager::isConnected()
+{
+    if (!_initialized) {
+        return false;
     }
     
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to connect to WiFi: %s", esp_err_to_name(err));
+    return (xEventGroupGetBits(_eventGroup) & WIFI_CONNECTED_BIT) != 0;
+}
+
+esp_err_t WiFiManager::setStaticIP(const esp_netif_ip_info_t& ip_info, esp_netif_dns_info_t& dns_info)
+{
+    if (!_initialized) {
+        ESP_LOGE(TAG, "WiFi manager not initialized");
+        return ESP_ERR_INVALID_STATE;
     }
     
-    return err;
+    if (_netif == NULL) {
+        ESP_LOGE(TAG, "Network interface not created");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Set static IP configuration
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(_netif));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(_netif, &ip_info));
+    
+    // Set DNS configuration
+    ESP_ERROR_CHECK(esp_netif_set_dns_info(_netif, ESP_NETIF_DNS_MAIN, &dns_info));
+    
+    ESP_LOGI(TAG, "Static IP configuration set");
+    return ESP_OK;
 }
 
 esp_err_t WiFiManager::disconnect()
@@ -150,35 +165,19 @@ esp_err_t WiFiManager::disconnect()
     return esp_wifi_disconnect();
 }
 
-bool WiFiManager::isConnected()
-{
-    return (xEventGroupGetBits(_eventGroup) & WIFI_CONNECTED_BIT) != 0;
-}
-
 void WiFiManager::getIpAddressStr(char* buffer, size_t buffer_size)
 {
-    // Default value if IP cannot be retrieved
-    strncpy(buffer, "0.0.0.0", buffer_size);
-    
-    if (!isConnected()) {
-        return;
-    }
-    
-    // Get IP info
-    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif == NULL) {
-        ESP_LOGE(TAG, "Failed to get netif handle");
+    if (!_initialized || _netif == NULL) {
+        strncpy(buffer, "0.0.0.0", buffer_size);
         return;
     }
     
     esp_netif_ip_info_t ip_info;
-    esp_err_t err = esp_netif_get_ip_info(netif, &ip_info);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get IP info: %s", esp_err_to_name(err));
+    if (esp_netif_get_ip_info(_netif, &ip_info) != ESP_OK) {
+        strncpy(buffer, "0.0.0.0", buffer_size);
         return;
     }
     
-    // Convert IP to string
     snprintf(buffer, buffer_size, IPSTR, IP2STR(&ip_info.ip));
 }
 
