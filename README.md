@@ -117,5 +117,5 @@ This project is licensed under the terms specified in the LICENSE file.
 
 ## Credits
 
-- Uses the [Dark Dragons Astro Alpaca Server](https://github.com/darkdragonsastro/python-alpaca-server) library for ASCOM Alpaca protocol support
+- Uses the [Dark Dragons Astro Alpaca Server](https://github.com/darkdragonsastro/esp32-idf-ascom-alpaca) library for ASCOM Alpaca protocol support
 - ESP-IDF framework by Espressif Systems 
