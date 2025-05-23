@@ -5,10 +5,11 @@
 static const char* TAG = "alpaca_switch";
 
 // Constructor with configurable switches
-AlpacaSwitch::AlpacaSwitch(const switch_config_t* configs, int num_switches) : Switch()
+AlpacaSwitch::AlpacaSwitch(const switch_config_t* configs, int num_switches, const char* firmware_version) : Switch()
 {
     _connected = true; // Start as connected regardless of WiFi
     _num_switches = num_switches;
+    _firmware_version = firmware_version;
     
     // Allocate memory for switch properties
     _switch_states = new bool[num_switches];
@@ -125,13 +126,13 @@ esp_err_t AlpacaSwitch::get_driverinfo(char *buf, size_t len)
 
 esp_err_t AlpacaSwitch::get_driverversion(char *buf, size_t len)
 {
-    strncpy(buf, "1.0.0", len);
+    strncpy(buf, _firmware_version.c_str(), len);
     return ALPACA_OK;
 }
 
 esp_err_t AlpacaSwitch::get_interfaceversion(uint32_t *version)
 {
-    *version = 2;
+    *version = 1; // As per requirements
     return ALPACA_OK;
 }
 

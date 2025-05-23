@@ -20,7 +20,7 @@ typedef struct {
 class AlpacaSwitch : public AlpacaServer::Switch
 {
 public:
-    AlpacaSwitch(const switch_config_t* configs, int num_switches);
+    AlpacaSwitch(const switch_config_t* configs, int num_switches, const char* firmware_version);
     ~AlpacaSwitch();
 
 public:
@@ -55,6 +55,7 @@ public:
 private:
     bool _connected;
     int _num_switches;
+    std::string _firmware_version;
     
     bool *_switch_states;
     char **_switch_names;

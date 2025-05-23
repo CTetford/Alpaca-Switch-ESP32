@@ -11,6 +11,8 @@
 #include <nvs_flash.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <string> // Added for std::string
+#include <esp_efuse.h> // Added for MAC address
 
 #include "alpaca_switch.h"
 #include "wifi_manager.h"
@@ -128,16 +130,32 @@ extern "C" void app_main(void)
     }
     
     // Create ASCOM Switch device instance
-    AlpacaSwitch* switchDevice = new AlpacaSwitch(switch_configs, DEFAULT_NUM_SWITCHES);
+    AlpacaSwitch* switchDevice = new AlpacaSwitch(switch_configs, DEFAULT_NUM_SWITCHES, desc.version);
     
     // Create vector of devices
     std::vector<AlpacaServer::Device *> devices;
     devices.push_back(switchDevice);
     
     // Create the Alpaca API server with our devices
+    const char* default_serial = "ESP32_SWITCH_SERIAL";
+    std::string unique_id_str;
+
+    if (strcmp(DEVICE_SERIAL, default_serial) == 0) {
+        uint8_t mac[6];
+        char mac_str[13]; // 12 chars for MAC, 1 for null terminator
+        // Get MAC address from EFUSE
+        esp_efuse_mac_get_default(mac); 
+        sprintf(mac_str, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        unique_id_str = std::string(DEVICE_NAME) + "-" + mac_str;
+        ESP_LOGI(TAG, "Using generated UniqueID: %s", unique_id_str.c_str());
+    } else {
+        unique_id_str = DEVICE_SERIAL;
+        ESP_LOGI(TAG, "Using UniqueID from config: %s", unique_id_str.c_str());
+    }
+
     AlpacaServer::Api api(
         devices,
-        DEVICE_SERIAL,
+        unique_id_str.c_str(), // Use generated or configured UniqueID
         DEVICE_NAME,
         DEVICE_ORGANIZATION,
         desc.version,
